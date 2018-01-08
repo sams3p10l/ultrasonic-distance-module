@@ -17,9 +17,6 @@
 #include <asm/io.h>
 #include <asm/uaccess.h>
 
-//fnasnfkasjfnaskjnfaskjfnaskfna
-#define PERAZIKALAZA 38
-
 MODULE_LICENSE("Dual BSD/GPL");
 
 // NOTE: Check Broadcom BCM2835 datasheet, page 91+
