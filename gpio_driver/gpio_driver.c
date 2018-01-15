@@ -16,10 +16,12 @@
 #include <linux/gpio.h>
 #include <asm/io.h>
 #include <asm/uaccess.h>
+#include "defines.h"
+#include "gpio_functions.h"
 
 MODULE_LICENSE("Dual BSD/GPL");
 
-// NOTE: Check Broadcom BCM2835 datasheet, page 91+
+// NOTE: Check Broadcom BCM8325 datasheet, page 91+
 // NOTE: GPIO Base address is set to 0x7E200000,
 //       but it is VC CPU BUS address, while the
 //       ARM physical address is 0x3F200000, what
@@ -27,115 +29,6 @@ MODULE_LICENSE("Dual BSD/GPL");
 //       BCM8325 datasheet, having in mind that
 //       total system ram is 0x3F000000 (1GB - 16MB)
 //       instead of 0x20000000 (512 MB)
-
-/* GPIO registers base address. */
-#define BCM2708_PERI_BASE   (0x3F000000)
-#define GPIO_BASE           (BCM2708_PERI_BASE + 0x200000)
-#define GPIO_ADDR_SPACE_LEN (0xB4)
-//--
-
-//Handle GPIO: 0-9
-/* GPIO Function Select 0. */
-#define GPFSEL0_OFFSET (0x00000000)
-
-//Handle GPIO: 10-19
-/* GPIO Function Select 1. */
-#define GPFSEL1_OFFSET (0x00000004)
-
-//Handle GPIO: 20-29
-/* GPIO Function Select 2. */
-#define GPFSEL2_OFFSET (0x00000008)
-
-//Handle GPIO: 30-39
-/* GPIO Function Select 3. */
-#define GPFSEL3_OFFSET (0x0000000C)
-
-//Handle GPIO: 40-49
-/* GPIO Function Select 4. */
-#define GPFSEL4_OFFSET (0x00000010)
-
-//Handle GPIO: 50-53
-/* GPIO Function Select 5. */
-#define GPFSEL5_OFFSET (0x00000014)
-//--
-
-//GPIO: 0-31
-/* GPIO Pin Output Set 0. */
-#define GPSET0_OFFSET (0x0000001C)
-
-//GPIO: 32-53
-/* GPIO Pin Output Set 1. */
-#define GPSET1_OFFSET (0x00000020)
-//--
-
-//GPIO: 0-31
-/* GPIO Pin Output Clear 0. */
-#define GPCLR0_OFFSET (0x00000028)
-
-//GPIO: 32-53
-/* GPIO Pin Output Clear 1. */
-#define GPCLR1_OFFSET (0x0000002C)
-//--
-
-//GPIO: 0-31
-/* GPIO Pin Level 0. */
-#define GPLEV0_OFFSET (0x00000034)
-
-//GPIO: 32-53
-/* GPIO Pin Level 1. */
-#define GPLEV1_OFFSET (0x00000038)
-//--
-
-//GPIO: 0-53
-/* GPIO Pin Pull-up/down Enable. */
-#define GPPUD_OFFSET (0x00000094)
-
-//GPIO: 0-31
-/* GPIO Pull-up/down Clock Register 0. */
-#define GPPUDCLK0_OFFSET (0x00000098)
-
-//GPIO: 32-53
-/* GPIO Pull-up/down Clock Register 1. */
-#define GPPUDCLK1_OFFSET (0x0000009C)
-//--
-
-/* PUD - GPIO Pin Pull-up/down */
-typedef enum {PULL_NONE = 0, PULL_DOWN = 1, PULL_UP = 2} PUD;
-//--
-
-//000 = GPIO Pin 'x' is an input
-//001 = GPIO Pin 'x' is an output
-// By default GPIO pin is being used as an input
-typedef enum {GPIO_DIRECTION_IN = 0, GPIO_DIRECTION_OUT = 1} DIRECTION;
-//--
-
-/* GPIO pins available on connector p1. */
-#define GPIO_02 (2)
-#define GPIO_03 (3)
-#define GPIO_04 (4)
-#define GPIO_05 (5)
-#define GPIO_06 (6)
-#define GPIO_07 (7)
-#define GPIO_08 (8)
-#define GPIO_09 (9)
-#define GPIO_10 (10)
-#define GPIO_11 (11)
-#define GPIO_12 (12)
-#define GPIO_13 (13)
-#define GPIO_14 (14)
-#define GPIO_15 (15)
-#define GPIO_16 (16)
-#define GPIO_17 (17)
-#define GPIO_18 (18)
-#define GPIO_19 (19)
-#define GPIO_20 (20)
-#define GPIO_21 (21)
-#define GPIO_22 (22)
-#define GPIO_23 (23)
-#define GPIO_24 (24)
-#define GPIO_25 (25)
-#define GPIO_26 (26)
-#define GPIO_27 (27)
 
 /* Declaration of gpio_driver.c functions */
 int gpio_driver_init(void);
@@ -159,247 +52,86 @@ module_init(gpio_driver_init);
 module_exit(gpio_driver_exit);
 
 /* Global variables of the driver */
+int counter = 0;
+int enable = 1;
 
 /* Major number. */
 int gpio_driver_major;
 
-/* Buffer to store data. */
-#define BUF_LEN 80
+struct hrtimer tajmer;
+static ktime_t time_1_sec;
+
 char* gpio_driver_buffer;
 
 /* Virtual address where the physical GPIO address is mapped */
 void* virt_gpio_base;
 
 /* IRQ number. */
-static int irq_gpio3 = -1;
+static int irq_gpio27 = -1;
+static int irq_gpio22 = -1;
 
-/*
- * GetGPFSELReg function
- *  Parameters:
- *   pin    - number of GPIO pin;
- *
- *   return - GPFSELn offset from GPIO base address, for containing desired pin control
- *  Operation:
- *   Based on the passed GPIO pin number, finds the corresponding GPFSELn reg and
- *   returns its offset from GPIO base address.
- */
-unsigned int GetGPFSELReg(char pin)
+static enum hrtimer_restart stoperica(struct hrtimer *param)
 {
-    unsigned int addr;
-
-    if(pin >= 0 && pin <10)
-        addr = GPFSEL0_OFFSET;
-    else if(pin >= 10 && pin <20)
-        addr = GPFSEL1_OFFSET;
-    else if(pin >= 20 && pin <30)
-        addr = GPFSEL2_OFFSET;
-    else if(pin >= 30 && pin <40)
-        addr = GPFSEL3_OFFSET;
-    else if(pin >= 40 && pin <50)
-        addr = GPFSEL4_OFFSET;
-    else /*if(pin >= 50 && pin <53) */
-        addr = GPFSEL5_OFFSET;
-
-  return addr;
-}
-
-/*
- * GetGPIOPinOffset function
- *  Parameters:
- *   pin    - number of GPIO pin;
- *
- *   return - offset of the pin control bit, position in control registers
- *  Operation:
- *   Based on the passed GPIO pin number, finds the position of its control bit
- *   in corresponding control registers.
- */
-char GetGPIOPinOffset(char pin)
-{
-    if(pin >= 0 && pin <10)
-        pin = pin;
-    else if(pin >= 10 && pin <20)
-        pin -= 10;
-    else if(pin >= 20 && pin <30)
-        pin -= 20;
-    else if(pin >= 30 && pin <40)
-        pin -= 30;
-    else if(pin >= 40 && pin <50)
-        pin -= 40;
-    else /*if(pin >= 50 && pin <53) */
-        pin -= 50;
-
-    return pin;
-}
-
-/*
- * SetInternalPullUpDown function
- *  Parameters:
- *   pin    - number of GPIO pin;
- *   pull   - set internal pull up/down/none if PULL_UP/PULL_DOWN/PULL_NONE selected
- *  Operation:
- *   Sets to use internal pull-up or pull-down resistor, or not to use it if pull-none
- *   selected for desired GPIO pin.
- */
-void SetInternalPullUpDown(char pin, PUD pull)
-{
-    unsigned int gppud_offset;
-    unsigned int gppudclk_offset;
-    unsigned int tmp;
-    unsigned int mask;
-
-    /* Get the offset of GPIO Pull-up/down Register (GPPUD) from GPIO base address. */
-    gppud_offset = GPPUD_OFFSET;
-
-    /* Get the offset of GPIO Pull-up/down Clock Register (GPPUDCLK) from GPIO base address. */
-    gppudclk_offset = (pin < 32) ? GPPUDCLK0_OFFSET : GPPUDCLK1_OFFSET;
-
-    /* Get pin offset in register . */
-    pin = (pin < 32) ? pin : pin - 32;
-
-    /* Write to GPPUD to set the required control signal (i.e. Pull-up or Pull-Down or neither
-       to remove the current Pull-up/down). */
-    iowrite32(pull, virt_gpio_base + gppud_offset);
-
-    /* Wait 150 cycles � this provides the required set-up time for the control signal */
-
-    /* Write to GPPUDCLK0/1 to clock the control signal into the GPIO pads you wish to
-       modify � NOTE only the pads which receive a clock will be modified, all others will
-       retain their previous state. */
-    tmp = ioread32(virt_gpio_base + gppudclk_offset);
-    mask = 0x1 << pin;
-    tmp |= mask;
-    iowrite32(tmp, virt_gpio_base + gppudclk_offset);
-
-    /* Wait 150 cycles � this provides the required hold time for the control signal */
-
-    /* Write to GPPUD to remove the control signal. */
-    iowrite32(PULL_NONE, virt_gpio_base + gppud_offset);
-
-    /* Write to GPPUDCLK0/1 to remove the clock. */
-    tmp = ioread32(virt_gpio_base + gppudclk_offset);
-    mask = 0x1 << pin;
-    tmp &= (~mask);
-    iowrite32(tmp, virt_gpio_base + gppudclk_offset);
-}
-
-/*
- * SetGpioPinDirection function
- *  Parameters:
- *   pin       - number of GPIO pin;
- *   direction - GPIO_DIRECTION_IN or GPIO_DIRECTION_OUT
- *  Operation:
- *   Sets the desired GPIO pin to be used as input or output based on the direcation value.
- */
-void SetGpioPinDirection(char pin, DIRECTION direction)
-{
-    unsigned int GPFSELReg_offset;
-    unsigned int tmp;
-    unsigned int mask;
-
-    /* Get base address of function selection register. */
-    GPFSELReg_offset = GetGPFSELReg(pin);
-
-    /* Calculate gpio pin offset. */
-    pin = GetGPIOPinOffset(pin);
-
-    /* Set gpio pin direction. */
-    tmp = ioread32(virt_gpio_base + GPFSELReg_offset);
-    if(direction)
-    { //set as output: set 1
-      mask = 0x1 << (pin*3);
-      tmp |= mask;
-    }
+	if(enable == 1)
+	{
+		counter ++;
+		printk(KERN_INFO "Vrijeme: %d\n", counter);
+	}
     else
-    { //set as input: set 0
-      mask = ~(0x1 << (pin*3));
-      tmp &= mask;
-    }
-    iowrite32(tmp, virt_gpio_base + GPFSELReg_offset);
+	{
+		printk(KERN_INFO "Stoperica je zaustavljena\n");
+		counter = 0;
+	}
+
+    hrtimer_forward(&tajmer, ktime_get(), time_1_sec);
+
+    return HRTIMER_RESTART;
 }
 
-/*
- * SetGpioPin function
- *  Parameters:
- *   pin       - number of GPIO pin;
- *  Operation:
- *   Sets the desired GPIO pin to HIGH level. The pin should previously be defined as output.
- */
-void SetGpioPin(char pin)
+/* interrupt handler called when falling edge on PB0 (GPIO_27) occurs*/
+static irqreturn_t h_irq_gpio27(int irq, void *data)
 {
-    unsigned int GPSETreg_offset;
-    unsigned int tmp;
-
-    /* Get base address of gpio set register. */
-    GPSETreg_offset = (pin < 32) ? GPSET0_OFFSET : GPSET1_OFFSET;
-    pin = (pin < 32) ? pin : pin - 32;
-
-    /* Set gpio. */
-    tmp = 0x1 << pin;
-    iowrite32(tmp, virt_gpio_base + GPSETreg_offset);
-}
-
-/*
- * ClearGpioPin function
- *  Parameters:
- *   pin       - number of GPIO pin;
- *  Operation:
- *   Sets the desired GPIO pin to LOW level. The pin should previously be defined as output.
- */
-void ClearGpioPin(char pin)
-{
-    unsigned int GPCLRreg_offset;
-    unsigned int tmp;
-
-    /* Get base address of gpio clear register. */
-    GPCLRreg_offset = (pin < 32) ? GPCLR0_OFFSET : GPCLR1_OFFSET;
-    pin = (pin < 32) ? pin : pin - 32;
-
-    /* Clear gpio. */
-    tmp = 0x1 << pin;
-    iowrite32(tmp, virt_gpio_base + GPCLRreg_offset);
-}
-
-/*
- * GetGpioPinValue function
- *  Parameters:
- *   pin       - number of GPIO pin;
- *
- *   return    - the level read from desired GPIO pin
- *  Operation:
- *   Reads the level from the desired GPIO pin and returns the read value.
- */
-char GetGpioPinValue(char pin)
-{
-    unsigned int GPLEVreg_offset;
-    unsigned int tmp;
-    unsigned int mask;
-
-    /* Get base address of gpio level register. */
-    GPLEVreg_offset = (pin < 32) ?  GPLEV0_OFFSET : GPLEV1_OFFSET;
-    pin = (pin < 32) ? pin : pin - 32;
-
-    /* Read gpio pin level. */
-    tmp = ioread32(virt_gpio_base + GPLEVreg_offset);
-    mask = 0x1 << pin;
-    tmp &= mask;
-
-    return (tmp >> pin);
-}
-
-/* interrupt handler called when falling edge on PB0 (GPIO_03) occurs;
-   read the level from SW0 (GPIO_12) */
-static irqreturn_t h_irq_gpio3(int irq, void *data)
-{
-    static char value = -1;
 
     printk("Interrupt from IRQ 0x%x\n", irq);
 
-    value = GetGpioPinValue(GPIO_12);
+    //value = GetGpioPinValue(GPIO_12);
 
-    printk("GPIO_12 level = 0x%x\n", value);
+    //printk("GPIO_12 level = 0x%x\n", value);
+
+	if (enable == 2 || enable == 3)
+	{
+		enable = 1;
+	}
+
+	printk(KERN_INFO "STANJE JE NA %d.\n", enable);
+
 
     return IRQ_HANDLED;
 }
+
+//da li nam treba drugi interrupt?
+/*static irqreturn_t h_irq_gpio22(int irq, void *data)
+{
+
+    printk("Interrupt from IRQ 0x%x\n", irq);
+
+    //value = GetGpioPinValue(GPIO_12);
+
+    //printk("GPIO_12 level = 0x%x\n", value);
+
+	if (enable == 1)
+	{
+		enable = 2;
+	}else if(enable == 2)
+	{
+		enable = 3;
+	}
+
+	printk(KERN_INFO "STANJE JE NA %d.\n", enable);
+
+
+    return IRQ_HANDLED;
+}*/
 
 /*
  * Initialization:
@@ -438,6 +170,13 @@ int gpio_driver_init(void)
     /* Initialize data buffer. */
     memset(gpio_driver_buffer, 0, BUF_LEN);
 
+	/* Initialize high resolution timer. */
+
+    hrtimer_init(&tajmer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+    time_1_sec = ktime_set(TIMER_SEC, TIMER_NANO_SEC);
+    tajmer.function = &stoperica;
+    hrtimer_start(&tajmer, time_1_sec, HRTIMER_MODE_REL);
+
     /* map the GPIO register space from PHYSICAL address space to virtual address space */
     virt_gpio_base = ioremap(GPIO_BASE, GPIO_ADDR_SPACE_LEN);
     if(!virt_gpio_base)
@@ -447,32 +186,40 @@ int gpio_driver_init(void)
     }
 
     /* Initialize GPIO pins. */
-    /* LEDS */
-    SetGpioPinDirection(GPIO_06, GPIO_DIRECTION_OUT);
+    SetGpioPinDirection(GPIO_17, GPIO_DIRECTION_IN);
+    SetGpioPinDirection(GPIO_27, GPIO_DIRECTION_OUT);
 
-    /* SWitches */
-    SetInternalPullUpDown(GPIO_12, PULL_UP);
-    SetGpioPinDirection(GPIO_12, GPIO_DIRECTION_IN);
-
-    /* PushButtons */
-    SetInternalPullUpDown(GPIO_03, PULL_UP);
-    SetGpioPinDirection(GPIO_03, GPIO_DIRECTION_IN);
-
-    /* Initialize gpio 3 ISR. */
-    result = gpio_request_one(GPIO_03, GPIOF_IN, "irq_gpio3");
+    /* Initialize gpio 27 ISR. */
+    result = gpio_request_one(GPIO_27, GPIOF_IN, "irq_gpio27");
 	if(result != 0)
     {
         printk("Error: GPIO request failed!\n");
         goto fail_irq;
     }
-    irq_gpio3 = gpio_to_irq(GPIO_03);
-	result = request_irq(irq_gpio3, h_irq_gpio3,
-      IRQF_TRIGGER_FALLING, "irq_gpio3", (void *)(h_irq_gpio3));
+    irq_gpio27 = gpio_to_irq(GPIO_27);
+
+	result = request_irq(irq_gpio27, h_irq_gpio27, IRQF_TRIGGER_FALLING, "irq_gpio27", (void *)(h_irq_gpio27));
 	if(result != 0)
     {
         printk("Error: ISR not registered!\n");
         goto fail_irq;
     }
+
+    //init za drugi interrupt?
+    /*
+    result = gpio_request_one(GPIO_22, GPIOF_IN, "irq_gpio22");
+	if(result != 0)
+    {
+        printk("Error: GPIO request failed!\n");
+        goto fail_irq;
+    }
+    irq_gpio22 = gpio_to_irq(GPIO_22);
+	result = request_irq(irq_gpio22, h_irq_gpio22, IRQF_TRIGGER_FALLING, "irq_gpio22", (void *)(h_irq_gpio22));
+	if(result != 0)
+    {
+        printk("Error: ISR not registered!\n");
+        goto fail_irq;
+    }*/
 
     return 0;
 
@@ -508,17 +255,23 @@ void gpio_driver_exit(void)
     printk(KERN_INFO "Removing gpio_driver module\n");
 
     /* Release IRQ and handler. */
-    disable_irq(irq_gpio3);
-    free_irq(irq_gpio3, h_irq_gpio3);
-    gpio_free(GPIO_03);
+    disable_irq(irq_gpio27);
+    free_irq(irq_gpio27, h_irq_gpio27);
+    gpio_free(GPIO_27);
+
+    disable_irq(irq_gpio17);
+    free_irq(irq_gpio17, h_irq_gpio17);
+    gpio_free(GPIO_17);
 
     /* Clear GPIO pins. */
-    ClearGpioPin(GPIO_06);
+    ClearGpioPin(GPIO_27);
+	ClearGpioPin(GPIO_17);
+
+	hrtimer_cancel(&tajmer);
 
     /* Set GPIO pins as inputs and disable pull-ups. */
-    SetGpioPinDirection(GPIO_06, GPIO_DIRECTION_IN);
-    SetInternalPullUpDown(GPIO_12, PULL_NONE);
-    SetInternalPullUpDown(GPIO_03, PULL_NONE);
+    SetGpioPinDirection(GPIO_27, GPIO_DIRECTION_IN);
+    SetGpioPinDirection(GPIO_17, GPIO_DIRECTION_IN);
 
     /* Unmap GPIO Physical address space. */
     if (virt_gpio_base)
