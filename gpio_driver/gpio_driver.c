@@ -109,30 +109,6 @@ static irqreturn_t h_irq_gpio27(int irq, void *data)
     return IRQ_HANDLED;
 }
 
-//da li nam treba drugi interrupt?
-/*static irqreturn_t h_irq_gpio22(int irq, void *data)
-{
-
-    printk("Interrupt from IRQ 0x%x\n", irq);
-
-    //value = GetGpioPinValue(GPIO_12);
-
-    //printk("GPIO_12 level = 0x%x\n", value);
-
-	if (enable == 1)
-	{
-		enable = 2;
-	}else if(enable == 2)
-	{
-		enable = 3;
-	}
-
-	printk(KERN_INFO "STANJE JE NA %d.\n", enable);
-
-
-    return IRQ_HANDLED;
-}*/
-
 /*
  * Initialization:
  *  1. Register device driver
@@ -204,22 +180,6 @@ int gpio_driver_init(void)
         printk("Error: ISR not registered!\n");
         goto fail_irq;
     }
-
-    //init za drugi interrupt?
-    /*
-    result = gpio_request_one(GPIO_22, GPIOF_IN, "irq_gpio22");
-	if(result != 0)
-    {
-        printk("Error: GPIO request failed!\n");
-        goto fail_irq;
-    }
-    irq_gpio22 = gpio_to_irq(GPIO_22);
-	result = request_irq(irq_gpio22, h_irq_gpio22, IRQF_TRIGGER_FALLING, "irq_gpio22", (void *)(h_irq_gpio22));
-	if(result != 0)
-    {
-        printk("Error: ISR not registered!\n");
-        goto fail_irq;
-    }*/
 
     return 0;
 
